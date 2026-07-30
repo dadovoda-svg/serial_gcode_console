@@ -1,10 +1,11 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 import serial
 import serial.tools.list_ports
 import time
 import threading
 import argparse
+import queue
 
 class GCodeSenderApp:
     def __init__(self, root, port, busy_delay_ms):
@@ -22,8 +23,18 @@ class GCodeSenderApp:
         self.connected = False
         self.start_line = 1
         self._step_mode = False
+        self.serial_lock = threading.Lock()
+        self.pendant_queue = queue.PriorityQueue()
+        self.pendant_sequence = 0
+        self.pendant_generation = 0
+        self.pendant_window = None
+        self.pendant_queue_label = None
 
         self.setup_ui()
+
+        # I comandi del pendant usano la stessa seriale, ma vengono inviati
+        # esclusivamente quando non e' in corso l'esecuzione del programma.
+        threading.Thread(target=self.pendant_process, daemon=True).start()
 
         # Monitor della connessione
         threading.Thread(target=self.connection_monitor, daemon=True).start()
@@ -70,6 +81,9 @@ class GCodeSenderApp:
         tk.Button(btn_frame, text="STOP", command=self.stop_sending,
                   bg="#e74c3c", fg="white", width=8, **btn_opt).pack(side=tk.LEFT, padx=2)
 
+        tk.Button(btn_frame, text="PENDANT", command=self.open_pendant,
+                  width=10, **btn_opt_bold).pack(side=tk.LEFT, padx=10)
+
         tk.Button(btn_frame, text="Pulisci Log", command=self.clear_log, width=10, **btn_opt).pack(side=tk.RIGHT, padx=2)
 
         # --- 3. Area Log ---
@@ -85,6 +99,129 @@ class GCodeSenderApp:
         self.status_bar = tk.Label(self.root, text="DISCONNESSO", bd=1, relief=tk.SUNKEN,
                                    anchor=tk.W, bg="red", fg="white", font=('Helvetica', 8))
         self.status_bar.grid(row=3, column=0, sticky="ew")
+
+    def open_pendant(self):
+        """Apre (o porta in primo piano) il pannello di jog cartesiano."""
+        if self.pendant_window is not None and self.pendant_window.winfo_exists():
+            self.pendant_window.deiconify()
+            self.pendant_window.lift()
+            self.pendant_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        self.pendant_window = window
+        window.title("Pendant CNC")
+        window.resizable(False, False)
+        window.transient(self.root)
+        window.protocol("WM_DELETE_WINDOW", self.close_pendant)
+
+        body = tk.Frame(window, padx=12, pady=12)
+        body.grid(sticky="nsew")
+
+        tk.Label(body, text="Coppia di assi:").grid(row=0, column=0, sticky="w")
+        self.pendant_axes = tk.StringVar(value="X / Y")
+        axes = ttk.Combobox(
+            body, textvariable=self.pendant_axes, state="readonly", width=14,
+            values=("X / Y", "X / Z", "Y / Z", "Rz / Ry", "Rz / Rx", "Ry / Rx"),
+        )
+        axes.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(6, 0))
+
+        tk.Label(body, text="Profilo:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.pendant_profile = tk.StringVar(value="G14 - Normale")
+        ttk.Combobox(
+            body, textvariable=self.pendant_profile, state="readonly", width=14,
+            values=("G13 - Rapido", "G14 - Normale", "G15 - Configurabile"),
+        ).grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=(8, 0))
+
+        tk.Label(body, text="Incremento:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.pendant_step = tk.StringVar(value="1")
+        for column, value in enumerate(("0.1", "1", "10"), start=1):
+            tk.Radiobutton(body, text=value, variable=self.pendant_step, value=value).grid(
+                row=2, column=column, pady=(8, 0)
+            )
+        tk.Label(body, text="mm per traslazioni, gradi per rotazioni", font=("Helvetica", 8)).grid(
+            row=3, column=0, columnspan=4, sticky="w"
+        )
+
+        movement = tk.LabelFrame(body, text=" Movimento relativo ", padx=8, pady=8)
+        movement.grid(row=4, column=0, columnspan=4, pady=(10, 6))
+        tk.Button(movement, text="↑", width=7, command=lambda: self.queue_pendant_move(1, 1)).grid(row=0, column=1, padx=2, pady=2)
+        tk.Button(movement, text="←", width=7, command=lambda: self.queue_pendant_move(0, -1)).grid(row=1, column=0, padx=2, pady=2)
+        tk.Button(movement, text="→", width=7, command=lambda: self.queue_pendant_move(0, 1)).grid(row=1, column=2, padx=2, pady=2)
+        tk.Button(movement, text="↓", width=7, command=lambda: self.queue_pendant_move(1, -1)).grid(row=2, column=1, padx=2, pady=2)
+
+        tk.Button(body, text="ARRESTA", command=self.pendant_stop, bg="#e67e22", fg="white", width=16).grid(
+            row=5, column=0, columnspan=4, pady=(4, 0)
+        )
+        self.pendant_queue_label = tk.Label(body, text="Coda pendant: 0")
+        self.pendant_queue_label.grid(row=6, column=0, columnspan=4, pady=(6, 0))
+
+    def close_pendant(self):
+        if self.pendant_window is not None:
+            self.pendant_window.destroy()
+        self.pendant_window = None
+        self.pendant_queue_label = None
+
+    def queue_pendant_move(self, axis_index, direction):
+        if not self.connected:
+            self.log("Pendant: comando non accodato, seriale disconnessa.")
+            return
+
+        axis_pair = {
+            "X / Y": ("X", "Y"), "X / Z": ("X", "Z"), "Y / Z": ("Y", "Z"),
+            "Rz / Ry": ("Rz", "Ry"), "Rz / Rx": ("Rz", "Rx"), "Ry / Rx": ("Ry", "Rx"),
+        }[self.pendant_axes.get()]
+        axis = axis_pair[axis_index]
+        step = float(self.pendant_step.get()) * direction
+        profile = self.pendant_profile.get().split()[0]
+        command = f"{profile} {axis}={step:g}"
+        self.pendant_sequence += 1
+        self.pendant_queue.put((1, self.pendant_sequence, self.pendant_generation, command))
+        self.log(f"Pendant accodato: {command}")
+        self.update_pendant_queue_label()
+
+    def pendant_stop(self):
+        """Arresto normale: M18, mai M112 (ESTOP)."""
+        self.stop_sending()
+        self.pendant_generation += 1
+        self.clear_pendant_queue()
+        self.pendant_sequence += 1
+        self.pendant_queue.put((0, self.pendant_sequence, self.pendant_generation, "M18"))
+        self.log("Pendant: arresto normale accodato (M18).")
+        self.update_pendant_queue_label()
+
+    def clear_pendant_queue(self):
+        while True:
+            try:
+                self.pendant_queue.get_nowait()
+                self.pendant_queue.task_done()
+            except queue.Empty:
+                return
+
+    def update_pendant_queue_label(self):
+        if self.pendant_queue_label is not None and self.pendant_queue_label.winfo_exists():
+            self.pendant_queue_label.config(text=f"Coda pendant: {self.pendant_queue.qsize()}")
+
+    def pendant_process(self):
+        while True:
+            _, _, generation, command = self.pendant_queue.get()
+            try:
+                # Non interlacciare i jog con un file G-code in esecuzione.
+                while self.running and command != "M18":
+                    time.sleep(0.05)
+                if command != "M18" and generation != self.pendant_generation:
+                    self.log(f"Pendant annullato: {command}")
+                elif self.connected:
+                    result = self.transmit_command(command, lambda: not self.connected)
+                    if result == "ok":
+                        self.log(f"Pendant completato: {command}")
+                    elif result == "error":
+                        self.log(f"Pendant rifiutato: {command}")
+                else:
+                    self.log(f"Pendant scartato, seriale disconnessa: {command}")
+            finally:
+                self.pendant_queue.task_done()
+                self.root.after(0, self.update_pendant_queue_label)
 
     def log(self, message):
         self.log_area.configure(state='normal')
@@ -226,6 +363,31 @@ class GCodeSenderApp:
             self.btn_step.config(state="normal")
         self.btn_pause.config(text="PAUSA", bg="#f1c40f", fg="black", state="disabled")
 
+    def transmit_command(self, command, cancelled):
+        """Trasmette una riga e attende la risposta terminale senza condividere la seriale."""
+        with self.serial_lock:
+            try:
+                self.ser.write((command + "\n").encode())
+                self.log(f"TX: {command}")
+                while not cancelled():
+                    response = self.ser.readline().decode(errors="replace").strip()
+                    if not response or response.startswith("@"):
+                        continue
+
+                    self.log(f"RX: {response}")
+                    resp_lower = response.lower()
+                    if resp_lower == "ok":
+                        return "ok"
+                    if "error:busy" in resp_lower:
+                        return "busy"
+                    if "error" in resp_lower:
+                        self.log(f"!!! ERRORE: {response}")
+                        return "error"
+            except (serial.SerialException, OSError, AttributeError) as error:
+                self.log(f"Errore seriale: {error}")
+                return "error"
+        return "cancelled"
+
     def send_process(self):
         try:
             all_content = self.editor.get(1.0, tk.END).splitlines()
@@ -244,34 +406,22 @@ class GCodeSenderApp:
                     while self.paused and self.running: time.sleep(0.1)
                     if not self.running: break
 
-                    self.ser.write((clean_line + "\n").encode())
-                    self.log(f"TX: {clean_line}")
-
-                    command_done = False
-                    while not command_done and self.running:
-                        response = self.ser.readline().decode().strip()
-                        if not response: continue
-                        if response.startswith("@"): continue
-
-                        self.log(f"RX: {response}")
-                        resp_lower = response.lower()
-
-                        if resp_lower == "ok":
-                            success = True
-                            command_done = True
-                            next_line = i + 1
-                            self.root.after(0, lambda nl=next_line: self.editor.mark_set(tk.INSERT, f"{nl}.0"))
-                            if self._step_mode:
-                                self.paused = True
-                                self._step_mode = False
-                        elif "error:busy" in resp_lower:
-                            self.log(f"!! Occupato - Attendo {int(self.busy_delay*1000)}ms...")
-                            time.sleep(self.busy_delay)
-                            command_done = True
-                        elif "error" in resp_lower:
-                            self.log(f"!!! ERRORE: {response}")
-                            self.stop_sending()
-                            return
+                    result = self.transmit_command(
+                        clean_line, lambda: not self.running or not self.connected
+                    )
+                    if result == "ok":
+                        success = True
+                        next_line = i + 1
+                        self.root.after(0, lambda nl=next_line: self.editor.mark_set(tk.INSERT, f"{nl}.0"))
+                        if self._step_mode:
+                            self.paused = True
+                            self._step_mode = False
+                    elif result == "busy":
+                        self.log(f"!! Occupato - Attendo {int(self.busy_delay*1000)}ms...")
+                        time.sleep(self.busy_delay)
+                    elif result == "error":
+                        self.stop_sending()
+                        return
             self.log("--- Fine Sequenza ---")
         except Exception as e:
             self.log(f"Errore: {e}")
