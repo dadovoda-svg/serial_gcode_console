@@ -118,11 +118,11 @@ class GCodeSenderApp:
         body = tk.Frame(window, padx=12, pady=12)
         body.grid(sticky="nsew")
 
-        tk.Label(body, text="Coppia di assi:").grid(row=0, column=0, sticky="w")
-        self.pendant_axes = tk.StringVar(value="X / Y")
+        tk.Label(body, text="Movimento:").grid(row=0, column=0, sticky="w")
+        self.pendant_mode = tk.StringVar(value="Traslazione")
         axes = ttk.Combobox(
-            body, textvariable=self.pendant_axes, state="readonly", width=14,
-            values=("X / Y", "X / Z", "Y / Z", "Rz / Ry", "Rz / Rx", "Ry / Rx"),
+            body, textvariable=self.pendant_mode, state="readonly", width=14,
+            values=("Traslazione", "Rotazione"),
         )
         axes.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(6, 0))
 
@@ -135,26 +135,28 @@ class GCodeSenderApp:
 
         tk.Label(body, text="Incremento:").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.pendant_step = tk.StringVar(value="1")
-        for column, value in enumerate(("0.1", "1", "10"), start=1):
+        for column, value in enumerate(("0.5", "1", "10", "20"), start=1):
             tk.Radiobutton(body, text=value, variable=self.pendant_step, value=value).grid(
                 row=2, column=column, pady=(8, 0)
             )
         tk.Label(body, text="mm per traslazioni, gradi per rotazioni", font=("Helvetica", 8)).grid(
-            row=3, column=0, columnspan=4, sticky="w"
+            row=3, column=0, columnspan=5, sticky="w"
         )
 
         movement = tk.LabelFrame(body, text=" Movimento relativo ", padx=8, pady=8)
-        movement.grid(row=4, column=0, columnspan=4, pady=(10, 6))
-        tk.Button(movement, text="↑", width=7, command=lambda: self.queue_pendant_move(1, 1)).grid(row=0, column=1, padx=2, pady=2)
-        tk.Button(movement, text="←", width=7, command=lambda: self.queue_pendant_move(0, -1)).grid(row=1, column=0, padx=2, pady=2)
-        tk.Button(movement, text="→", width=7, command=lambda: self.queue_pendant_move(0, 1)).grid(row=1, column=2, padx=2, pady=2)
-        tk.Button(movement, text="↓", width=7, command=lambda: self.queue_pendant_move(1, -1)).grid(row=2, column=1, padx=2, pady=2)
+        movement.grid(row=4, column=0, columnspan=5, pady=(10, 6))
+        tk.Button(movement, text="↑", width=7, command=lambda: self.queue_pendant_move(0, 1)).grid(row=0, column=1, padx=2, pady=2)
+        tk.Button(movement, text="←", width=7, command=lambda: self.queue_pendant_move(1, -1)).grid(row=1, column=0, padx=2, pady=2)
+        tk.Button(movement, text="→", width=7, command=lambda: self.queue_pendant_move(1, 1)).grid(row=1, column=2, padx=2, pady=2)
+        tk.Button(movement, text="↓", width=7, command=lambda: self.queue_pendant_move(0, -1)).grid(row=2, column=1, padx=2, pady=2)
+        tk.Button(movement, text="Z+", width=7, command=lambda: self.queue_pendant_move(2, 1)).grid(row=0, column=3, padx=(12, 2), pady=2)
+        tk.Button(movement, text="Z−", width=7, command=lambda: self.queue_pendant_move(2, -1)).grid(row=2, column=3, padx=(12, 2), pady=2)
 
         tk.Button(body, text="ARRESTA", command=self.pendant_stop, bg="#e67e22", fg="white", width=16).grid(
-            row=5, column=0, columnspan=4, pady=(4, 0)
+            row=5, column=0, columnspan=5, pady=(4, 0)
         )
         self.pendant_queue_label = tk.Label(body, text="Coda pendant: 0")
-        self.pendant_queue_label.grid(row=6, column=0, columnspan=4, pady=(6, 0))
+        self.pendant_queue_label.grid(row=6, column=0, columnspan=5, pady=(6, 0))
 
     def close_pendant(self):
         if self.pendant_window is not None:
@@ -167,11 +169,14 @@ class GCodeSenderApp:
             self.log("Pendant: comando non accodato, seriale disconnessa.")
             return
 
-        axis_pair = {
-            "X / Y": ("X", "Y"), "X / Z": ("X", "Z"), "Y / Z": ("Y", "Z"),
-            "Rz / Ry": ("Rz", "Ry"), "Rz / Rx": ("Rz", "Rx"), "Ry / Rx": ("Ry", "Rx"),
-        }[self.pendant_axes.get()]
-        axis = axis_pair[axis_index]
+        # I cursori comandano sempre X (verticale) e Y (orizzontale);
+        # i due pulsanti laterali comandano Z. In modalita' rotazione
+        # vengono inviati i rispettivi assi rotazionali.
+        axes = {
+            "Traslazione": ("X", "Y", "Z"),
+            "Rotazione": ("Rx", "Ry", "Rz"),
+        }
+        axis = axes[self.pendant_mode.get()][axis_index]
         step = float(self.pendant_step.get()) * direction
         profile = self.pendant_profile.get().split()[0]
         command = f"{profile} {axis}={step:g}"
