@@ -1,0 +1,2 @@
+cd ~/Documents/Projects/documents/FreeCAD1.0/SixDOF_arm_V7/firmware/Tools/serial_gcode_console
+codex resume 019fb49f-1c09-7830-8014-988de5a1ec47
