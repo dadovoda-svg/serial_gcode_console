@@ -1,55 +1,94 @@
 ; inviare manualmente M999 e G28
-;G28
+;M999 H ;hard reset
+;G28    ;home
 
 ;preparazione movimenti
-M700 v=100 a=240
+M700 v=180 a=240
 M702 s=0
 
 ;ribadisco "home"
-G12 x=247 y=0 z=257.892 rz=0 ry=0 rx=0
+;G12 X=247 Y=0.000 Z=228 Rz=0.000 Ry=-0.000 Rx=-0.000
+G2 J1=0 J2=0 J3=0 J4=0 J5=90 J6=0
 
-;movimento assoluto (con singolarità)
-G15 x=20 y=-100 z=-150 ry=-50
-;movimento assoluto (senza singolarità)
-;G15 x=20 y=-100 z=-150 ry=-40
-
+;movimenti giunti singoli
+G2 j1=30
+M400
+G2 j1=-30
+M400
+G2 j1=0 
 M400
 
-M702 s=1 L=10 R=2
+G2 j2=30
+M400
+G2 j2=-10
+M400
+G2 j2=0
+M400
+
+G2 j3=30
+M400
+G2 j3=-30
+M400
+G2 j3=0
+M400
+
+G2 j4=90
+M400
+G2 j4=-90
+M400
+G2 j4=0
+M400
+
+G2 j5=-90
+M400
+G2 j5=0
+M400
+G2 j5=90
+M400
+
+G2 j6=-180
+M400
+G2 j6=180
+M400
+G2 j6=0
+M400
+
+M280 J=6 P=0 S=8
+M401 1000
+M280 J=6 P=999 S=8
+M401 1000
+M280 J=6 P=500 S=8
+M401 1000
+
+
+;movimento assoluto (con singolarità)
+;G15 x=20 y=-100 z=-150 ry=-50
+;movimento assoluto (senza singolarità)
+G15 x=20 y=-100 z=-150 ry=-40
+M400
+M280 J=6 P=999 S=8
+
+M702 s=1 L=10 R=5
 G15 y=200
 M400
 M702 s=0
 
-G12 x=247 y=0 z=257.892 rz=0 ry=0 rx=0
+G2 J1=0 J2=0 J3=0 J4=0 J5=90 J6=0
 M400
 
 M702 s=1 L=10 R=2
-G15 rx=25 ry=-30
+G15 x=20 y=20 rx=25 ry=-30
 M400
-G23
+M704
 g22 x=100
-m400
 G22 y=100
-m400
 G22 x=-100
-m400
 G22 y=-100
-m400
+G22 z=-100
+G22 z=100
 M702 s=0
 
-G12 x=247 y=0 z=257.892 rz=0 ry=0 rx=0
-
-G1 J3=30
-M400
-G1 J3=-45
-M400
-
-G1 J1=45
-M400
-G1 J1=-45
-M400
-
-G12 x=247 y=0 z=257.892 rz=0 ry=0 rx=0
+G2 J1=0 J2=0 J3=0 J4=0 J5=90 J6=0
 M400
 
 G12 X=250 Y=20.000 Z=3 Rz=0.000 Ry=-0.000 Rx=-0.000
@@ -66,10 +105,29 @@ G12 X=250 Y=20.000 Z=3 Rz=0.000 Ry=-0.000 Rx=-0.000
 M400
 M702 s=0
 
-G12 x=247 y=0 z=257.892 rz=0 ry=0 rx=0
+;M700 v=40 a=240
+G2 J1=0 J2=0 J3=0 J4=0 J5=90 J6=0
 M400
 
-;M30
+G12 X=206.850 Y=-142.139 Z=17.471 Rz=0.056 Ry=0.019 Rx=-29.898
+M702 s=1 L=10 R=2
+G12 X=326.274 Y=-141.792 Z=16.897 Rz=0.140 Ry=-29.815 Rx=-29.775
+G12 X=326.388 Y=138.038 Z=16.949 Rz=0.351 Ry=-29.820 Rx=30.071
+G12 X=266.357 Y=138.040 Z=17.031 Rz=0.351 Ry=0.194 Rx=30.048
+M702 s=0
+
+G2 J1=0 J2=0 J3=0 J4=0 J5=90 J6=0
+M400
+
+;G30
+
+
+
+
+
+
+
+
 
 
 

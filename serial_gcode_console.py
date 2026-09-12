@@ -8,6 +8,17 @@ import argparse
 import queue
 
 class GCodeSenderApp:
+    ABSOLUTE_PENDANT_PROFILES = (
+        "G13 - Rapido",
+        "G14 - Normale",
+        "G15 - Configurabile",
+    )
+    LOCAL_PENDANT_PROFILES = (
+        "G23 - Rapido",
+        "G24 - Normale",
+        "G25 - Configurabile",
+    )
+
     def __init__(self, root, port, busy_delay_ms):
         self.root = root
         self.root.title("Partner di Programmazione - GCODE Controller V7")
@@ -145,25 +156,35 @@ class GCodeSenderApp:
         )
         axes.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(6, 0))
 
-        tk.Label(body, text="Profilo:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.pendant_profile = tk.StringVar(value="G14 - Normale")
-        ttk.Combobox(
-            body, textvariable=self.pendant_profile, state="readonly", width=14,
-            values=("G13 - Rapido", "G14 - Normale", "G15 - Configurabile"),
-        ).grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=(8, 0))
+        tk.Label(body, text="Frame:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.pendant_frame = tk.StringVar(value="Frame assoluto")
+        frame_selector = ttk.Combobox(
+            body, textvariable=self.pendant_frame, state="readonly", width=14,
+            values=("Frame assoluto", "Frame locale"),
+        )
+        frame_selector.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=(8, 0))
+        frame_selector.bind("<<ComboboxSelected>>", self.set_pendant_frame)
 
-        tk.Label(body, text="Incremento:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        tk.Label(body, text="Profilo:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.pendant_profile = tk.StringVar(value="G14 - Normale")
+        self.pendant_profile_selector = ttk.Combobox(
+            body, textvariable=self.pendant_profile, state="readonly", width=14,
+            values=self.ABSOLUTE_PENDANT_PROFILES,
+        )
+        self.pendant_profile_selector.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=(8, 0))
+
+        tk.Label(body, text="Incremento:").grid(row=3, column=0, sticky="w", pady=(8, 0))
         self.pendant_step = tk.StringVar(value="1")
         for column, value in enumerate(("0.5", "1", "10", "20"), start=1):
             tk.Radiobutton(body, text=value, variable=self.pendant_step, value=value).grid(
-                row=2, column=column, pady=(8, 0)
+                row=3, column=column, pady=(8, 0)
             )
         tk.Label(body, text="mm per traslazioni, gradi per rotazioni", font=("Helvetica", 8)).grid(
-            row=3, column=0, columnspan=5, sticky="w"
+            row=4, column=0, columnspan=5, sticky="w"
         )
 
         movement = tk.LabelFrame(body, text=" Movimento relativo ", padx=8, pady=8)
-        movement.grid(row=4, column=0, columnspan=5, pady=(10, 6))
+        movement.grid(row=5, column=0, columnspan=5, pady=(10, 6))
         tk.Button(movement, text="↑", width=7, command=lambda: self.queue_pendant_move(0, 1)).grid(row=0, column=1, padx=2, pady=2)
         tk.Button(movement, text="←", width=7, command=lambda: self.queue_pendant_move(1, -1)).grid(row=1, column=0, padx=2, pady=2)
         tk.Button(movement, text="→", width=7, command=lambda: self.queue_pendant_move(1, 1)).grid(row=1, column=2, padx=2, pady=2)
@@ -172,16 +193,43 @@ class GCodeSenderApp:
         tk.Button(movement, text="Z−", width=7, command=lambda: self.queue_pendant_move(2, -1)).grid(row=2, column=3, padx=(12, 2), pady=2)
 
         tk.Button(body, text="ARRESTA", command=self.pendant_stop, bg="#e67e22", fg="white", width=16).grid(
-            row=5, column=0, columnspan=5, pady=(4, 0)
+            row=6, column=0, columnspan=5, pady=(4, 0)
         )
         self.pendant_queue_label = tk.Label(body, text="Coda G-code: 0")
-        self.pendant_queue_label.grid(row=6, column=0, columnspan=5, pady=(6, 0))
+        self.pendant_queue_label.grid(row=7, column=0, columnspan=5, pady=(6, 0))
 
     def close_pendant(self):
         if self.pendant_window is not None:
             self.pendant_window.destroy()
         self.pendant_window = None
         self.pendant_queue_label = None
+
+    def set_pendant_frame(self, _event=None):
+        """Aggiorna i profili relativi e acquisisce il frame locale scelto."""
+        local_frame = self.pendant_frame.get() == "Frame locale"
+        profiles = self.LOCAL_PENDANT_PROFILES if local_frame else self.ABSOLUTE_PENDANT_PROFILES
+
+        # Mantiene il tipo di profilo (rapido, normale o configurabile) scelto.
+        previous_profile = self.pendant_profile.get()
+        previous_index = next(
+            (index for index, profile in enumerate(self.ABSOLUTE_PENDANT_PROFILES + self.LOCAL_PENDANT_PROFILES)
+             if profile == previous_profile),
+            1,
+        ) % 3
+        self.pendant_profile_selector.configure(values=profiles)
+        self.pendant_profile.set(profiles[previous_index])
+
+        if not local_frame:
+            self.log("Pendant: frame assoluto selezionato (G13/G14/G15).")
+            return
+        if not self.connected:
+            self.log("Pendant: frame locale selezionato, ma M704 non inviato: seriale disconnessa.")
+            return
+
+        # M704 congela origine e orientamento del frame locale e passa dalla
+        # FIFO comune prima dei successivi movimenti del pendant.
+        self.enqueue_gcode_command("M704", source="pendant")
+        self.log("Pendant: frame locale selezionato, M704 accodato.")
 
     def queue_pendant_move(self, axis_index, direction):
         if not self.connected:
